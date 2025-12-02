@@ -11,31 +11,7 @@ library(shinyBS)
 library(DTEAssurance)
 library(shinyAce)
 library(tidyr)
-
-
-rowCallback <- c(
-  "function(row, data){",
-  "  for(var i=0; i<data.length; i++){",
-  "    if(data[i] === null){",
-  "      $('td:eq('+i+')', row).html('NA')",
-  "        .css({'color': 'rgb(151,151,151)', 'font-style': 'italic'});",
-  "    }",
-  "  }",
-  "}"
-)
-
-table_choices <- c("% Stop", "% Stop for Efficacy", "% Stop for Futility")
-
-
-default_table <- function(n) {
-  data.frame(
-    Stage = 1:n,
-    IF = seq(1/n, 1, length.out = n),
-    `α-spending` = seq(0.025/n, 0.025, length.out = n),
-    `β-spending` = seq(0.1/n, 0.1, length.out = n),
-    check.names = FALSE
-  )
-}
+library(rjags)
 
 
 # UI definition
@@ -53,7 +29,7 @@ ui <- fluidPage(
   shinyjs::useShinyjs(),
 
   # Application title
-  titlePanel("Interim Analyses: Delayed Treatment Effects - Elicited Distributions"),
+  titlePanel("Adaptive Design: Delayed Treatment Effects - Elicited Distributions"),
 
   mainPanel(
     tabsetPanel(
@@ -79,9 +55,9 @@ ui <- fluidPage(
                      selectInput("ExpChoice", "Choice", choices = c("Fixed", "Distribution"), selected = "Fixed"),
                      conditionalPanel(
                        condition = "input.ExpChoice == 'Fixed'",
-                       selectInput("ExpRateorTime", "Input type", choices = c("Parameter", "Landmark")),
+                       selectInput("ExpRateorTime", "Input type", choices = c("Parameters", "Landmark")),
                        conditionalPanel(
-                         condition = "input.ExpRateorTime == 'Parameter'",
+                         condition = "input.ExpRateorTime == 'Parameters'",
                          numericInput("ExpRate", label =  HTML(paste0("Rate (\u03bb",tags$sub("c"), ")")), value = 0.08, min=0),
                          bsTooltip(id = "ExpRate", title = "Rate parameter")
                        ),
@@ -363,36 +339,59 @@ ui <- fluidPage(
                sidebarLayout(
                  sidebarPanel = sidebarPanel(
                    h3("GSD_model"),
+                   numericInput("total_events_simulate", "Number of Events", value = 300),
                    fluidRow(
-                     column(6,
-                            numericInput("total_events", "Number of Events", value = 300)
-                            ),
-                     column(6,
-                            numericInput("n_designs", "Number of Designs", value = 1, min = 1, max = 20)
-                            )
+                     column(4,
+                            numericInput("n_stages_alpha", "Number of Stages", value = 2)
+                     ),
+                     column(8,
+                            rHandsontableOutput("alpha_spending_table"),
+                     )
                    ),
-                   uiOutput("design_blocks"),
-                   numericInput("n_sims", "Number of simulations", value=1000),
+                   selectInput("fut_method", "Type of Futility", choices = c("None"="none", "Beta-Spending"="Beta", "BPP" = "BPP"), selected = "none"),
+                   conditionalPanel(
+                     condition = "input.fut_method == 'Beta'",
+                     fluidRow(
+                       column(4,
+                              numericInput("n_stages_beta", "Number of Stages", value = 2)
+                              ),
+                       column(8,
+                              rHandsontableOutput("beta_spending_table"),
+                       ),
+                     )
+                   ),
+                   conditionalPanel(
+                     condition = "input.fut_method == 'BPP'",
+                     fluidRow(
+                       column(6,
+                              numericInput("BPP_timing", label =  "BPP timing", value = 0.5)
+                       ),
+                       column(6,
+                              numericInput("BPP_threshold", label =  "BPP threshold", value = 0.2)
+                       )
+                     )
+                   ),
+                   numericInput("n_sims_simulate", "Number of simulations", value=1000),
                    actionButton("calc_GSD_assurance", label  = "Calculate")
                  ),
                  mainPanel = mainPanel(
                    tags$h4(
-                     id = "toggleHeader",
+                     id = "toggleHeader_simulate",
                      style = "cursor: pointer; display: flex; align-items: center; justify-content: space-between;",
                      div(
                        style = "display: flex; align-items: center;",
-                       tags$span(id = "arrow", "►"),  # Arrow icon
+                       tags$span(id = "arrow_simulate", "►"),  # Arrow icon
                        " Show/hide the function"
                      ),
                  actionButton(
-                   inputId = "copy_btn",
+                   inputId = "copy_btn_simulate",
                    label = "📋 Copy",
                    class = "btn btn-sm btn-outline-primary"
                  )
                ),
 
                tags$div(
-                 id = "collapseText",
+                 id = "collapseText_simulate",
                  class = "collapse",
                  aceEditor(
                    outputId = "display_func_simulate",
@@ -406,10 +405,10 @@ ui <- fluidPage(
 
                tags$script(HTML("
     // Toggle collapse + arrow
-    $(document).on('click', '#toggleHeader', function(e) {
-      if (!$(e.target).is('#copy_btn')) {   // avoid toggle when clicking copy
-        $('#collapseText').collapse('toggle');
-        var arrow = $('#arrow');
+    $(document).on('click', '#toggleHeader_simulate', function(e) {
+      if (!$(e.target).is('#copy_btn_simulate')) {   // avoid toggle when clicking copy
+        $('#collapseText_simulate').collapse('toggle');
+        var arrow = $('#arrow_simulate');
         if (arrow.text() == '►') {
           arrow.text('▼');
         } else {
@@ -419,7 +418,7 @@ ui <- fluidPage(
     });
 
     // Copy-to-clipboard
-    $(document).on('click', '#copy_btn', function() {
+    $(document).on('click', '#copy_btn_simulate', function() {
       var editorText = ace.edit('display_func_simulate').getValue();
       navigator.clipboard.writeText(editorText);
     });
@@ -427,34 +426,210 @@ ui <- fluidPage(
 
                tabsetPanel(
                  tabPanel("Tables",
-                          hidden(selectizeInput("selected_columns_sim_table", "Metrics to View",
-                                                choices = c("Assurance", "Duration", "Sample Size"), selected = c("Assurance", "Duration", "Sample Size"),
-                                                multiple = TRUE)),
-                          DTOutput("sim_table")),
+                          tableOutput("sim_table")),
                  tabPanel("Plots",
-                          selectInput("Boundary_IA", "Choose the IF (to view)", choices = NULL),
-                          plotlyOutput("boundary_plot"),
-                          br(), br(),
-                          plotOutput("Prop_Barchart"))
+                          plotlyOutput("boundary_plot"))
                ),
       )
                )
       ),
-      # Bayesian UI ---------------------------------
+      # BPP - Timing UI ---------------------------------
 
-      tabPanel("Bayesian",
+      tabPanel("BPP - Timing",
                sidebarLayout(
                  sidebarPanel = sidebarPanel(
-                   numericInput("IFBayesian", "Information Fraction", value = 0.5),
-                   numericInput("tEffBayesian", "Target Effect", value = 0.8),
-                   actionButton("calcBayesian", label  = "Calculate")
+                   fluidRow(
+                     column(6,
+                            numericInput("total_events_BPP_timing", "Number of Events", value = 300)
+                            ),
+                    column(6,
+                           numericInput("BPP_Timing_IF", "IF timing to look at", value = 0.5)
+                           )
+                   ),
+                   numericInput("n_sims_BPP_Timing", "Number of simulations", value=10),
+                   actionButton("calc_BPP_Timing", label  = "Calculate"),
+                   hidden(numericInput("n_breaks_BPP_timing", "Number of bins", value=10)),
+                   fluidRow(
+                            column(6,
+                                   hidden(numericInput("lower_bound_BPP_timing", "Lower bound", value=0.1))
+                            ),
+                            column(6,
+                                   hidden(numericInput("upper_bound_BPP_timing", "Upper bound", value=0.9))
+                            )
+                            )
+
                  ),
                  mainPanel = mainPanel(
-                   verbatimTextOutput("display_func_Bayesian"),
-                   plotOutput("BayesianPlot")
+                   tags$h4(
+                     id = "toggleHeader_BPP_Timing",
+                     style = "cursor: pointer; display: flex; align-items: center; justify-content: space-between;",
+                     div(
+                       style = "display: flex; align-items: center;",
+                       tags$span(id = "arrow_BPP_Timing", "►"),  # Arrow icon
+                       " Show/hide the function"
+                     ),
+                     actionButton(
+                       inputId = "copy_btn_BPP_Timing",
+                       label = "📋 Copy",
+                       class = "btn btn-sm btn-outline-primary"
+                     )
+                   ),
+
+                   tags$div(
+                     id = "collapseText_BPP_Timing",
+                     class = "collapse",
+                     aceEditor(
+                       outputId = "display_func_BPP_Timing",
+                       value = "",
+                       mode = "r",
+                       theme = "monokai",
+                       readOnly = TRUE,
+                       height = "400px"
+                     )
+                   ),
+
+                   tags$script(HTML("
+    // Toggle collapse + arrow
+    $(document).on('click', '#toggleHeader_BPP_Timing', function(e) {
+      if (!$(e.target).is('#copy_btn_BPP_Timing')) {   // avoid toggle when clicking copy
+        $('#collapseText_BPP_Timing').collapse('toggle');
+        var arrow = $('#arrow_BPP_Timing');
+        if (arrow.text() == '►') {
+          arrow.text('▼');
+        } else {
+          arrow.text('►');
+        }
+      }
+    });
+
+    // Copy-to-clipboard
+    $(document).on('click', '#copy_btn_BPP_Timing', function() {
+      var editorText = ace.edit('display_func_BPP_Timing').getValue();
+      navigator.clipboard.writeText(editorText);
+    });
+  ")),
+
+                   plotOutput("BPP_timing_hist"),
+                   textOutput("BPP_Timing_text")
+
+
+
+
                  )
                )
       ),
+
+      # BPP - Threshold UI ---------------------------------
+
+      tabPanel("BPP - Threshold",
+               sidebarLayout(
+                 sidebarPanel = sidebarPanel(
+                   fluidRow(
+                     column(6,
+                            numericInput("total_events_BPP_threshold", "Number of Events", value = 300)
+                     ),
+                     column(6,
+                            numericInput("BPP_Threshold_IF", "IF timing to look at", value = 0.5)
+                     )
+                   ),
+                   fluidRow(
+                     column(
+                       width = 4,
+                       numericInput(
+                         inputId = "lambda_c_threshold",
+                         label = HTML("&lambda;<sub>c</sub>"),
+                         value = 0.1
+                       )
+                     ),
+                     column(
+                       width = 4,
+                       numericInput(
+                         inputId = "delay_time_threshold",
+                         label = "Delay Time",
+                         value = 3
+                       )
+                     ),
+                     column(
+                       width = 4,
+                       numericInput(
+                         inputId = "post_delay_hr_threshold",
+                         label = HTML("Post-Delay HR"),
+                         value = 0.75
+                       )
+                     )
+                   ),
+                   numericInput("n_sims_BPP_Threshold", "Number of simulations", value=10),
+                   actionButton("calc_BPP_Threshold", label  = "Calculate"),
+                   fluidRow(
+                     column(6,
+                            hidden(numericInput("n_breaks_BPP_threshold", "Number of bins", value=10))
+                            ),
+                     column(6,
+                            hidden(numericInput("threshold_value", "Threshold Value", value=0.2))
+                            )
+
+                   )
+
+                 ),
+                 mainPanel = mainPanel(
+                   tags$h4(
+                     id = "toggleHeader_BPP_Threshold",
+                     style = "cursor: pointer; display: flex; align-items: center; justify-content: space-between;",
+                     div(
+                       style = "display: flex; align-items: center;",
+                       tags$span(id = "arrow_BPP_Threshold", "►"),  # Arrow icon
+                       " Show/hide the function"
+                     ),
+                     actionButton(
+                       inputId = "copy_btn_BPP_Threshold",
+                       label = "📋 Copy",
+                       class = "btn btn-sm btn-outline-primary"
+                     )
+                   ),
+
+                   tags$div(
+                     id = "collapseText_BPP_Threshold",
+                     class = "collapse",
+                     aceEditor(
+                       outputId = "display_func_BPP_Threshold",
+                       value = "",
+                       mode = "r",
+                       theme = "monokai",
+                       readOnly = TRUE,
+                       height = "400px"
+                     )
+                   ),
+
+                   tags$script(HTML("
+    // Toggle collapse + arrow
+    $(document).on('click', '#toggleHeader_BPP_Threshold', function(e) {
+      if (!$(e.target).is('#copy_btn_BPP_Threshold')) {   // avoid toggle when clicking copy
+        $('#collapseText_BPP_Threshold').collapse('toggle');
+        var arrow = $('#arrow_BPP_Threshold');
+        if (arrow.text() == '►') {
+          arrow.text('▼');
+        } else {
+          arrow.text('►');
+        }
+      }
+    });
+
+    // Copy-to-clipboard
+    $(document).on('click', '#copy_btn_BPP_Threshold', function() {
+      var editorText = ace.edit('display_func_BPP_Threshold').getValue();
+      navigator.clipboard.writeText(editorText);
+    });
+  ")),
+                   plotOutput("BPP_Threshold_hist"),
+                   textOutput("BPP_Threshold_text")
+
+
+
+
+                 )
+               )
+      ),
+
 
       # Report UI ---------------------------------
 
@@ -590,7 +765,7 @@ server <- function(input, output, session) {
       updateTextInput(session, inputId = "ExpChoice", value = inputData$control_parameters)
       if (inputData$control_parameters=="Fixed"){
         updateTextInput(session, inputId = "ExpRateorTime", value = inputData$fixed_parameters_type)
-        if (inputData$fixed_parameters_type=="Parameter"){
+        if (inputData$fixed_parameters_type=="Parameters"){
           updateTextInput(session, inputId = "ExpRate", value = inputData$lambda_c)
         } else if (inputData$fixed_parameters_type == "Landmark"){
           updateTextInput(session, inputId = "ExpTime", value = inputData$t1)
@@ -656,129 +831,171 @@ server <- function(input, output, session) {
 
   })
 
-
   # Simulate Logic ---------------------------------
 
+    output$alpha_spending_table <- renderRHandsontable({
 
-  # Store table data for each design
-  tables <- reactiveValues()
-
-  # Dynamic UI
-  output$design_blocks <- renderUI({
-    n <- input$n_designs
-    blocks <- lapply(1:n, function(i) {
-      fluidRow(
-        column(3,
-               numericInput(paste0("n_interims_", i),
-                            "Stages",
-                            value = 2, min = 1, max = 20)
-        ),
-        column(9,
-               rHandsontableOutput(paste0("hot_", i))
+    req(input$n_stages_alpha)
+    k <- input$n_stages_alpha
+        df <- data.frame(
+          Stage          = 1:k,
+          IF             = seq_len(k) / k,
+          alpha.spending = (1:k)/k * 0.025,
+          check.names    = FALSE
         )
-      )
+
+        rhandsontable(df, rowHeaders = FALSE) %>%
+          hot_col("Stage", readOnly = TRUE) %>%
+          hot_col("IF", type = "numeric", format = "0.00") %>%
+          hot_col("alpha.spending", type = "numeric", format = "0.0000")
+
     })
-    do.call(tagList, blocks)
+
+  output$beta_spending_table <- renderRHandsontable({
+
+    req(input$n_stages_beta)
+    k <- input$n_stages_beta
+    df <- data.frame(
+      Stage          = 1:k,
+      IF             = seq_len(k) / k,
+      beta.spending = (1:k)/k * 0.1,
+      check.names    = FALSE
+    )
+
+    rhandsontable(df, rowHeaders = FALSE) %>%
+      hot_col("Stage", readOnly = TRUE) %>%
+      hot_col("IF", type = "numeric", format = "0.00") %>%
+      hot_col("beta.spending", type = "numeric", format = "0.0000")
+
   })
 
-  observe({
-    n <- input$n_designs
-    lapply(1:n, function(i) {
-      output[[paste0("hot_", i)]] <- renderRHandsontable({
-        n_interims <- input[[paste0("n_interims_", i)]]
-        if (is.null(n_interims)) return(NULL)
 
-        # If table doesn't exist yet, create it
-        if (is.null(tables[[paste0("design_", i)]])) {
-          tables[[paste0("design_", i)]] <- default_table(n_interims)
-        } else {
-          # Adjust rows if n_interims changed
-          old_data <- tables[[paste0("design_", i)]]
-          n_old <- nrow(old_data)
-          if (n_interims > n_old) {
-            new_rows <- default_table(n_interims)[(n_old+1):n_interims, ]
-            old_data <- rbind(old_data, new_rows)
-          } else if (n_interims < n_old) {
-            old_data <- old_data[1:n_interims, ]
-          }
-          tables[[paste0("design_", i)]] <- old_data
-        }
-
-        rhandsontable(tables[[paste0("design_", i)]], rowHeaders = NULL) %>%
-          hot_col("Stage", readOnly = TRUE)  # Stage column not editable
-      })
-    })
-  })
-
-  # Capture edits
-  observe({
-    n <- input$n_designs
-    lapply(1:n, function(i) {
-      observeEvent(input[[paste0("hot_", i)]], {
-        tbl <- hot_to_r(input[[paste0("hot_", i)]])
-        tables[[paste0("design_", i)]] <- tbl
-      })
-    })
-  })
-
-  observe({
-    extracted_tables <- lapply(1:input$n_designs, function(i) tables[[paste0("design_", i)]])
-    IF_vector <- sapply(extracted_tables, function(df) paste(df$IF, collapse = ", "))
-    updateSelectInput(session, "Boundary_IA", choices = IF_vector)
-  })
 
   observe({
 
 
     output$boundary_plot <- renderPlotly({
 
-      extracted_tables <- lapply(1:input$n_designs, function(i) tables[[paste0("design_", i)]])
-      alpha_vector <- sapply(extracted_tables, function(df) paste(df$`α-spending`, collapse = ", "))
-      beta_vector <- sapply(extracted_tables, function(df) paste(df$`β-spending`, collapse = ", "))
-      IF_vector <- sapply(extracted_tables, function(df) paste(df$IF, collapse = ", "))
+      df <- hot_to_r(input$alpha_spending_table)
+      alpha_vector <- df$`alpha.spending`
+      IF_vector <- df$IF
 
-      chosen_design <- which(input$Boundary_IA==IF_vector)
+      if (input$fut_method %in% c("none", "BPP")){
+        design <- rpact::getDesignGroupSequential(
+          typeOfDesign = "asUser",
+          informationRates = IF_vector,
+          userAlphaSpending = alpha_vector,
+          typeBetaSpending = "none")
 
-      design <- rpact::getDesignGroupSequential(
-        typeOfDesign = "asUser",
-        informationRates = as.numeric(trimws(unlist(strsplit(IF_vector[chosen_design], ",")))),
-        userAlphaSpending = as.numeric(trimws(unlist(strsplit(alpha_vector[chosen_design], ",")))),
-        typeBetaSpending = "bsUser",
-        userBetaSpending = as.numeric(trimws(unlist(strsplit(beta_vector[chosen_design], ",")))))
+      efficacy_boundary <- data.frame(IF = IF_vector,
+                                    Z_Stat = design$criticalValues)
+
+      # Calculate dynamic y-axis limits
+      full_Z_Stat <- c(0, efficacy_boundary$Z_Stat)
+      ylim <- range(full_Z_Stat)
+
+      # Extend the limits by 10% on each side
+      buffer <- 0.1 * (ylim[2] - ylim[1])
+      extended_ylim <- c(ylim[1] - buffer, ylim[2] + buffer)
+
+      # Create the plot using plotly
+      p <- plot_ly() %>%
+        add_trace(data = efficacy_boundary, x = ~IF, y = ~Z_Stat, type = 'scatter', mode = 'lines+markers',
+                  line = list(color = 'red', width = 3),
+                  marker = list(color = 'red', size = 10, symbol = 'circle'),
+                  name = "Critical value") %>%
+        layout(yaxis = list(range = extended_ylim, title = "Futility Bound and Critical Value"),
+               title = "Boundaries",
+               xaxis = list(title = "Information Fraction"))
 
 
-         boundaryDFEff <- data.frame(IF = as.numeric(trimws(unlist(strsplit(IF_vector[chosen_design], ",")))),
-                                  zStat = design$criticalValues)
+      # Show the plot
+      p
+
+      } else if (input$fut_method  == "Beta"){
+
+        df_alpha <- hot_to_r(input$alpha_spending_table)
+        alpha_vec <- df_alpha$`alpha.spending`
+        eff_IF <- df_alpha$IF
+
+        df_beta <- hot_to_r(input$beta_spending_table)
+        beta_vec <- df_beta$`beta.spending`
+        fut_IF <- df_beta$IF
 
 
-        boundaryDFFut <- data.frame(IF = as.numeric(trimws(unlist(strsplit(IF_vector[chosen_design], ",")))),
-                                zStat = c(design$futilityBounds, design$criticalValues[length(design$criticalValues)]))
 
-        # Calculate dynamic y-axis limits
-        all_zStat <- c(boundaryDFEff$zStat, boundaryDFFut$zStat)
-        ylim <- range(all_zStat)
 
-        # Extend the limits by 10% on each side
-        buffer <- 0.1 * (ylim[2] - ylim[1])
-        extended_ylim <- c(ylim[1] - buffer, ylim[2] + buffer)
+        eff_design <- rpact::getDesignGroupSequential(
+          typeOfDesign      = "asUser",
+          informationRates  = eff_IF,
+          userAlphaSpending = alpha_vec,
+          typeBetaSpending  = "none"
+        )
 
-        # Create the plot using plotly
+        eff_df <- data.frame(
+          IF     = eff_IF,
+          Z_Stat = eff_design$criticalValues
+        )
+
+
+
+        fut_design <- rpact::getDesignGroupSequential(
+          typeOfDesign      = "noEarlyEfficacy",
+          informationRates  = fut_IF,
+          typeBetaSpending  = "bsUser",
+          userBetaSpending  = beta_vec
+        )
+
+
+        fut_length <- length(fut_IF)
+
+        fut_df <- data.frame(
+          IF     = numeric(fut_length),
+          Z_Stat = numeric(fut_length)
+        )
+
+
+        fut_df$IF <- fut_IF
+        fut_df$Z_Stat[1:(fut_length-1)] <- fut_design$futilityBounds
+
+        fut_df$Z_Stat[fut_length] <-  eff_design$criticalValues[length(eff_design$criticalValues)]
+
+
+
+        all_vals <- c(0, eff_df$Z_Stat, fut_df$Z_Stat)
+        plot_range <- range(all_vals)
+
+        margin <- 0.1 * diff(plot_range)
+        extended_ylim <- c(plot_range[1] - margin, plot_range[2] + margin)
+
+
         p <- plot_ly() %>%
-          add_trace(data = boundaryDFEff, x = ~IF, y = ~zStat, type = 'scatter', mode = 'lines+markers',
-                    line = list(color = 'red', width = 3),
-                    marker = list(color = 'red', size = 10, symbol = 'circle'),
-                    name = "Critical value") %>%
-          add_trace(data = boundaryDFFut, x = ~IF, y = ~zStat, type = 'scatter', mode = 'lines+markers',
-                    line = list(color = 'blue', width = 3),
-                    marker = list(color = 'blue', size = 10, symbol = 'circle'),
-                    name = "Futility bound") %>%
-          layout(yaxis = list(range = extended_ylim, title = "Futility Bound and Critical Value"),
-                 title = "Boundaries",
-                 xaxis = list(title = "Information Fraction"))
+          add_trace(
+            data = eff_df, x = ~IF, y = ~Z_Stat,
+            type = "scatter", mode = "lines+markers",
+            line = list(color = "red", width = 3),
+            marker = list(color = "red", size = 10),
+            name = "Efficacy Boundary"
+          ) %>%
+          add_trace(
+            data = fut_df, x = ~IF, y = ~Z_Stat,
+            type = "scatter", mode = "lines+markers",
+            line = list(color = "blue", width = 3, dash = "dash"),
+            marker = list(color = "blue", size = 10, symbol = "square"),
+            name = "Futility Boundary (Beta Spending)"
+          ) %>%
+          layout(
+            yaxis = list(range = extended_ylim, title = "Z-Value Boundaries"),
+            xaxis = list(title = "Information Fraction"),
+            title = "Efficacy and Futility Boundaries (Distinct IFs)"
+          )
+
+        p
 
 
-        # Show the plot
-       p
+}
+
+
 
       })
 
@@ -787,169 +1004,265 @@ server <- function(input, output, session) {
 
   function_call_simulate <- reactive({
 
-    base_call <- paste0("calc_dte_assurance_interim(n_c = ",
-                        input$n_c,
-                        ", \n n_t = ",
-                        input$n_t,
-                        ", \n control_model = list(dist = \"",
-                        input$ControlDist,
-                        "\"")
+    base_call <- paste0(
+      "calc_dte_assurance_adaptive(n_c = ",
+      input$n_c,
+      ", \n n_t = ",
+      input$n_t,
+      ", \n control_model = list(\n   dist = \"",
+      input$ControlDist,
+      "\""
+    )
 
-    if (input$ControlDist=="Exponential"){
-      base_call <- paste0(base_call,
-                          ", \n parameter_mode = \"",
-                          input$ExpChoice,
-                          "\"")
-      if (input$ExpChoice=="Fixed"){
-        base_call <- paste0(base_call,
-                            ", \n fixed_type = \"",
-                            input$ExpRateorTime,
-                            "\"")
-        if (input$ExpRateorTime == "Parameter"){
-          base_call <-  paste0(base_call, ", \n lambda = ",
-                               input$ExpRate)
-        } else if (input$ExpRateorTime == "Landmark"){
-          base_call <-  paste0(base_call, ", \n t1 = ",
-                               input$ExpTime,
-                               ", \n surv_t1 = ",
-                               input$ExpSurv)
+    if (input$ControlDist=="Exponential") {
+      base_call <- paste0(
+        base_call,
+        ", \n   parameter_mode = \"",
+        input$ExpChoice,
+        "\""
+      )
+
+      if (input$ExpChoice=="Fixed") {
+        base_call <- paste0(
+          base_call,
+          ", \n   fixed_type = \"",
+          input$ExpRateorTime,
+          "\""
+        )
+
+        if (input$ExpRateorTime == "Parameters") {
+          base_call <- paste0(
+            base_call,
+            ", \n   lambda = ",
+            input$ExpRate
+          )
+        } else if (input$ExpRateorTime == "Landmark") {
+          base_call <- paste0(
+            base_call,
+            ", \n   t1 = ",
+            input$ExpTime,
+            ", \n   surv_t1 = ",
+            input$ExpSurv
+          )
         }
       }
 
-      if (input$ExpChoice=="Distribution"){
-        base_call <-  paste0(base_call, ", \n t1 = ",
-                             input$ExpSurvTime,
-                             ", \n t1_Beta_a = ",
-                             input$ExpBetaA,
-                             ", \n t1_Beta_b = ",
-                             input$ExpBetaB)
+      if (input$ExpChoice=="Distribution") {
+        base_call <- paste0(
+          base_call,
+          ", \n   t1 = ",
+          input$ExpSurvTime,
+          ", \n   t1_Beta_a = ",
+          input$ExpBetaA,
+          ", \n   t1_Beta_b = ",
+          input$ExpBetaB
+        )
       }
     }
 
-    if (input$ControlDist == "Weibull"){
-      base_call <- paste0(base_call,
-                          ", \n control_parameters = \"",
-                          input$WeibullChoice,
-                          "\"")
+    if (input$ControlDist == "Weibull") {
 
-      if (input$WeibullChoice == "Fixed"){
-        base_call <- paste0(base_call,
-                            ", \n fixed_parameters_type = \"",
-                            input$WeibRateorTime,
-                            "\"")
+      base_call <- paste0(
+        base_call,
+        ", \n   control_parameters = \"",
+        input$WeibullChoice,
+        "\""
+      )
 
-        if (input$WeibRateorTime == "Parameters"){
-          base_call <-  paste0(base_call, ", \n lambda_c = ",
-                               input$WeibullScale,
-                               ", \n gamma_c = ",
-                               input$WeibullShape)
-        } else if (input$WeibRateorTime == "Landmark"){
-          base_call <-  paste0(base_call, ", \n t1 = ",
-                               input$WeibullTime1,
-                               ", \n t2 = ",
-                               input$WeibullSurv1,
-                               ", \n surv_t1 = ",
-                               input$WeibullTime2,
-                               ", \n surv_t2 = ",
-                               input$WeibullSurv2)
+      if (input$WeibullChoice == "Fixed") {
+
+        base_call <- paste0(
+          base_call,
+          ", \n   fixed_parameters_type = \"",
+          input$WeibRateorTime,
+          "\""
+        )
+
+        if (input$WeibRateorTime == "Parameters") {
+          base_call <- paste0(
+            base_call,
+            ", \n   lambda_c = ",
+            input$WeibullScale,
+            ", \n   gamma_c = ",
+            input$WeibullShape
+          )
+        } else if (input$WeibRateorTime == "Landmark") {
+          base_call <- paste0(
+            base_call,
+            ", \n   t1 = ",
+            input$WeibullTime1,
+            ", \n   t2 = ",
+            input$WeibullSurv1,
+            ", \n   surv_t1 = ",
+            input$WeibullTime2,
+            ", \n   surv_t2 = ",
+            input$WeibullSurv2
+          )
         }
 
-      } else if (input$WeibullChoice == "Distribution"){
-        base_call <-  paste0(base_call, ", \n t1 = ",
-                             input$WeibullDistT1,
-                             ", \n t2 = ",
-                             input$WeibullDistT2,
-                             ", \n t1_Beta_a = ",
-                             input$WeibullDistS1BetaA,
-                             ", \n t1_Beta_b = ",
-                             input$WeibullDistS1BetaB,
-                             ", \n diff_Beta_a = ",
-                             input$WeibullDistDelta1BetaA,
-                             ", \n diff_Beta_b = ",
-                             input$WeibullDistDelta1BetaB)
+      } else if (input$WeibullChoice == "Distribution") {
+        base_call <- paste0(
+          base_call,
+          ", \n   t1 = ",
+          input$WeibullDistT1,
+          ", \n   t2 = ",
+          input$WeibullDistT2,
+          ", \n   t1_Beta_a = ",
+          input$WeibullDistS1BetaA,
+          ", \n   t1_Beta_b = ",
+          input$WeibullDistS1BetaB,
+          ", \n   diff_Beta_a = ",
+          input$WeibullDistDelta1BetaA,
+          ", \n   diff_Beta_b = ",
+          input$WeibullDistDelta1BetaB
+        )
       }
     }
 
+    # Close control model and open effect model
+    base_call <- paste0(
+      base_call,
+      "), \n effect_model = list(\n   delay_SHELF = SHELF::fitdist(c(",
+      input$TValues,
+      "), probs = c(",
+      input$TProbs,
+      "), lower = ",
+      strsplit(input$TLimits, ", ")[[1]][1],
+      ", upper = ",
+      strsplit(input$TLimits, ", ")[[1]][2],
+      "), \n   delay_dist = \"",
+      input$TDist,
+      "\", \n   HR_SHELF = SHELF::fitdist(c(",
+      input$HRValues,
+      "), probs = c(",
+      input$HRProbs,
+      "), lower = ",
+      strsplit(input$HRLimits, ", ")[[1]][1],
+      ", upper = ",
+      strsplit(input$HRLimits, ", ")[[1]][2],
+      "), \n   HR_dist = \"",
+      input$HRDist,
+      "\", \n   P_S = ",
+      input$P_S,
+      ", \n   P_DTE = ",
+      input$P_DTE,
+      ")"
+    )
 
-    base_call <- paste0(base_call,
-                        "), \n effect_model = list(delay_SHELF = SHELF::fitdist(c(",
-                        input$TValues,
-                        "), probs = c(",
-                        input$TProbs,
-                        "), lower = ",
-                        strsplit(input$TLimits, ", ")[[1]][1],
-                        ", upper = ",
-                        strsplit(input$TLimits, ", ")[[1]][2],
-                        "), \n delay_time_dist = \"",
-                        input$TDist,
-                        "\", \n HR_SHELF = SHELF::fitdist(c(",
-                        input$HRValues,
-                        "), probs = c(",
-                        input$HRProbs,
-                        "), lower = ",
-                        strsplit(input$HRLimits, ", ")[[1]][1],
-                        ", upper = ",
-                        strsplit(input$HRLimits, ", ")[[1]][2],
-                        "), \n HR_dist = \"",
-                        input$HRDist,
-                        "\",  \n P_S = ",
-                        input$P_S,
-                        ", \n P_DTE = ",
-                        input$P_DTE,
-                        "), \n recruitment_model = list(method = \"",
-                        input$rec_method,
-                        "\"")
+    # recruitment_model
+    base_call <- paste0(
+      base_call,
+      ", \n recruitment_model = list(\n   method = \"",
+      input$rec_method,
+      "\""
+    )
 
-
-    if (input$rec_method == "power"){
-      base_call <- paste0(base_call,
-                          ", \n period = ",
-                          input$rec_period,
-                          ", \n power = ",
-                          input$rec_power)
+    if (input$rec_method == "power") {
+      base_call <- paste0(
+        base_call,
+        ", \n   period = ",
+        input$rec_period,
+        ", \n   power = ",
+        input$rec_power
+      )
     }
-    if (input$rec_method == "PWC"){
-      base_call <- paste0(base_call,
-                          ", \n rate = ",
-                          input$rec_rate,
-                          ", \n duration = ",
-                          input$rec_duration)
+
+    if (input$rec_method == "PWC") {
+      base_call <- paste0(
+        base_call,
+        ", \n   rate = ",
+        input$rec_rate,
+        ", \n   duration = ",
+        input$rec_duration
+      )
     }
 
+    base_call <- paste0(base_call, "\n )")
 
+    # GSD_model
+    base_call <- paste0(
+      base_call,
+      ", \n GSD_model = list(\n   events = ",
+      input$total_events_simulate
+    )
 
+    alpha_df <- hot_to_r(input$alpha_spending_table)
+    alpha_vector <- alpha_df$`alpha.spending`
+    alpha_IF <- alpha_df$IF
 
-    base_call <- paste0(base_call,
-                        "), \n GSD_model = list(events = ",
-                        input$total_events)
+    base_call <- paste0(
+      base_call,
+      ", \n   alpha_spending = c(",
+      paste(alpha_vector, collapse = ", "),
+      ")"
+    )
 
+    base_call <- paste0(
+      base_call,
+      ", \n   alpha_IF = c(",
+      paste(alpha_IF, collapse = ", "),
+      ")"
+    )
 
+    base_call <- paste0(
+      base_call,
+      ", \n   futility_type = \"",
+      input$fut_method,
+      "\""
+    )
 
-    extracted_tables <- lapply(1:input$n_designs, function(i) tables[[paste0("design_", i)]])
+    # futility options
+    if (input$fut_method == "Beta") {
+      beta_df <- hot_to_r(input$beta_spending_table)
+      beta_IF <- beta_df$IF
+      beta_vector <- beta_df$`beta.spending`
 
-    alpha_vector <- sapply(extracted_tables, function(df) paste(df$`α-spending`, collapse = ", "))
-    beta_vector <- sapply(extracted_tables, function(df) paste(df$`β-spending`, collapse = ", "))
-    IF_vector <- sapply(extracted_tables, function(df) paste(df$IF, collapse = ", "))
+      base_call <- paste0(
+        base_call,
+        ", \n   futility_IF = c(",
+        paste(beta_IF, collapse = ", "),
+        ")"
+      )
 
-    base_call <- paste0(base_call,
-                        ", \n alpha_spending = c(",
-                        paste0('"', alpha_vector, '"', collapse = ", "),
-                        ")")
+      base_call <- paste0(
+        base_call,
+        ", \n   beta_spending = c(",
+        paste(beta_vector, collapse = ", "),
+        ")"
+      )
+    }
 
+    if (input$fut_method == "BPP") {
 
-    base_call <- paste0(base_call,
-                        ", \n beta_spending = c(",
-                        paste0('"', beta_vector, '"', collapse = ", "),
-                        ")")
+      base_call <- paste0(
+        base_call,
+        ", \n   futility_IF = ",
+        input$BPP_timing
+      )
 
+      base_call <- paste0(
+        base_call,
+        ", \n   BPP_threshold = ",
+        input$BPP_threshold
+      )
 
-    base_call <- paste0(base_call,
-                        ", \n IF_vec = c(",
-                        paste0('"', IF_vector, '"', collapse = ", "),
-                        ")), \n n_sims = ",
-                        input$n_sims,
-                        ")")
+      base_call <- paste0(
+        base_call,
+        "\n ), \n analysis_model = list(\n",
+        "   method = \"LRT\",\n",
+        "   alternative_hypothesis = \"one.sided\",\n",
+        "   alpha = ",
+        alpha_vector[length(alpha_vector)]
+      )
+    }
 
+    # Close GSD_model and finish
+    base_call <- paste0(
+      base_call,
+      "\n ), \n n_sims = ",
+      input$n_sims_simulate,
+      ")"
+    )
 
     return(base_call)
 
@@ -959,32 +1272,31 @@ server <- function(input, output, session) {
     updateAceEditor(session, "display_func_simulate", value = function_call_simulate())
   })
 
-  calculateGSDAssurance <- eventReactive(input$calc_GSD_assurance, {
+  calculate_assurance_interim <- eventReactive(input$calc_GSD_assurance, {
     call_string <- function_call_simulate()
     result <- eval(parse(text = call_string))
-    shinyjs::show("selected_columns_sim_table")
     shinyjs::show("selected_metrics_sim_plot")
     return(result)
   })
 
 
-    output$sim_table <- renderDT({
-      sim_output <- calculateGSDAssurance()
+    output$sim_table <- renderTable({
+      sim_output <- calculate_assurance_interim()
 
       design_summary <- sim_output %>%
-        group_by(IF) %>%
         summarise(
           Assurance = mean(Decision %in% c("Stop for efficacy", "Successful at final")),
+          `Pr(Early Fut.)` = mean(Decision %in% c("Stop for futility")),
+          `Pr(Early Eff.)` = mean(Decision %in% c("Stop for efficacy")),
           `Average Duration` = round(mean(StopTime, na.rm = TRUE), 2),
-          `Average Sample Size` = round(mean(SampleSize, na.rm = TRUE), 2),
-          .groups = "drop"
+          `Average Sample Size` = round(mean(SampleSize, na.rm = TRUE), 2)
         )
 
     })
 
 
     # output$sim_plot <- renderPlotly({
-    #   sim_output <- calculateGSDAssurance()
+    #   sim_output <- calculate_assurance_interim()
     #
     #   if (input$number_of_looks>1){
     #     sim_output_DF <- do.call(rbind, lapply(sim_output, function(x) {
@@ -1069,145 +1381,131 @@ server <- function(input, output, session) {
     # })
     #
     #
-    output$Prop_Barchart <- renderPlot({
-      oldpar <- par(no.readonly = TRUE)
-      on.exit(par(oldpar))
-    sim_output <- calculateGSDAssurance()
-
-    sim_output$Outcome <- with(sim_output, ifelse(
-      Decision == "Stop for efficacy" & Final_Decision == "Successful", "Correctly stopped for Efficacy",
-      ifelse(Decision == "Stop for efficacy" & Final_Decision == "Unsuccessful", "Incorrectly stopped for Efficacy",
-             ifelse(Decision == "Stop for futility" & Final_Decision == "Successful", "Incorrectly stopped for Futility",
-                    ifelse(Decision == "Stop for futility" & Final_Decision == "Unsuccessful", "Correctly stopped for Futility",
-                           ifelse(Decision == "Successful at final" & Final_Decision == "Successful", "Successful at Final Analysis",
-                                  # Everything else (including final boundary failed due to interim analyses) is treated as Unsuccessful
-                                  "Unsuccessful at Final Analysis"
-                           ))))))
-
-
-
-      outcomes_decisions <- c("Successful at Final Analysis", "Correctly stopped for Efficacy",
-                              "Incorrectly stopped for Efficacy", "Incorrectly stopped for Futility",
-                              "Correctly stopped for Futility", "Unsuccessful at Final Analysis")
-
-      sim_output$Outcome <- factor(sim_output$Outcome, levels = outcomes_decisions)
-
-      outcome_decisions_colors <- setNames(c("green", "green", "green", "red", "red", "red"), outcomes_decisions)
-
-
-
-      # Create matrix with all combinations
-      IF_outcomes_mat <- sim_output %>%
-        group_by(IF, Outcome) %>%
-        summarise(n = n(), .groups = "drop") %>%
-        complete(IF, Outcome = outcomes_decisions, fill = list(n = 0)) %>%
-        group_by(IF) %>%
-        mutate(Proportion = round(n / sum(n), 3)) %>%
-        ungroup() %>%
-        mutate(Outcome = factor(Outcome, levels = outcomes_decisions)) %>%
-        arrange(Outcome) %>%
-        select(-n) %>%
-        pivot_wider(names_from = IF, values_from = Proportion, values_fill = 0)
-
-      # Remove the Outcome column and convert to matrix
-      numeric_mat <- as.matrix(IF_outcomes_mat[, -1])
-
-      # Now apply sum to rows 1:3
-
-      density_vals <- c(NA, 20, 50, 50, 20, NA)
-      angle_vals <- c(0, 45, -45, -45, 45, 0)
-
-      par(mar = c(5, 4, 4, 20))  # Increase right margin
-
-      # Get bar heights to determine where to draw lines
-      bar_heights <- apply(numeric_mat[1:3, , drop = F], 2, sum)
-
-
-      bar_positions <- barplot(numeric_mat,
-                               beside = FALSE,
-                               width = 1,  # Optional, but explicit
-                               col = outcome_decisions_colors[outcomes_decisions],
-                               density = density_vals,
-                               angle = angle_vals,
-                               xlab = "Information Fraction",
-                               ylab = "Proportion",
-                               main = "Proportion of Trial Outcomes at Different Information Fractions")
-
-
-
-      legend("topright",
-             legend = c(rev(outcomes_decisions), "Assurance"),
-             fill = c(rev(outcome_decisions_colors[outcomes_decisions]), NA),
-             border = c(rep("black", length(outcomes_decisions)), NA),
-             density = c(rev(density_vals), NA),
-             angle = c(rev(angle_vals), NA),
-             col = c(rep(NA, length(outcomes_decisions)), "black"),
-             cex = 0.6,
-             xpd = TRUE,
-             inset = c(-0.4, 0),
-             bty = "n")
-
-
-
-      # Add black separator lines between top and bottom outcome segments
-      segments(x0 = bar_positions - 0.5,  # left edge of each bar
-               x1 = bar_positions + 0.5,  # right edge
-               y0 = bar_heights,          # y position (cumulative height of top 3)
-               y1 = bar_heights,
-               col = "black",
-               lwd = 5)
-
-      # Add text labels just below the separator line
-      text(x = bar_positions,
-           y = bar_heights,  # Adjust this for spacing
-           labels = round(bar_heights, 2),
-           cex = 1,                # text size
-           pos = 1)                  # below the specified y (1 = below)
-
-
-    })
-
-
-  # Bayesian Logic ---------------------------------
-
-    # calc_BPP_hist <- function(n_c, n_t,
-    #                           control_dist = "Exponential",
-    #                           t1 = NULL, t2 = NULL,
-    #                           t1_Beta_a = NULL, t1_Beta_b = NULL,
-    #                           diff_Beta_a = NULL, diff_Beta_b = NULL,
-    #                           delay_time_SHELF, delay_time_dist = "hist",
-    #                           post_delay_HR_SHELF, post_delay_HR_dist = "hist",
-    #                           P_S = 1, P_DTE = 0, cens_events = NULL, IF = NULL,
-    #                           rec_method, rec_period=NULL, rec_power=NULL, rec_rate=NULL, rec_duration=NULL,
-    #                           type_one_error = NULL, N = 50, M = 50)
+    # output$Prop_Barchart <- renderPlot({
+    #   oldpar <- par(no.readonly = TRUE)
+    #   on.exit(par(oldpar))
+    # sim_output <- calculate_assurance_interim()
+    #
+    # sim_output$Outcome <- with(sim_output, ifelse(
+    #   Decision == "Stop for efficacy" & Final_Decision == "Successful", "Correctly stopped for Efficacy",
+    #   ifelse(Decision == "Stop for efficacy" & Final_Decision == "Unsuccessful", "Incorrectly stopped for Efficacy",
+    #          ifelse(Decision == "Stop for futility" & Final_Decision == "Successful", "Incorrectly stopped for Futility",
+    #                 ifelse(Decision == "Stop for futility" & Final_Decision == "Unsuccessful", "Correctly stopped for Futility",
+    #                        ifelse(Decision == "Successful at final" & Final_Decision == "Successful", "Successful at Final Analysis",
+    #                               # Everything else (including final boundary failed due to interim analyses) is treated as Unsuccessful
+    #                               "Unsuccessful at Final Analysis"
+    #                        ))))))
+    #
+    #
+    #
+    #   outcomes_decisions <- c("Successful at Final Analysis", "Correctly stopped for Efficacy",
+    #                           "Incorrectly stopped for Efficacy", "Incorrectly stopped for Futility",
+    #                           "Correctly stopped for Futility", "Unsuccessful at Final Analysis")
+    #
+    #   sim_output$Outcome <- factor(sim_output$Outcome, levels = outcomes_decisions)
+    #
+    #   outcome_decisions_colors <- setNames(c("green", "green", "green", "red", "red", "red"), outcomes_decisions)
+    #
+    #
+    #
+    #   # Create matrix with all combinations
+    #   IF_outcomes_mat <- sim_output %>%
+    #     group_by(IF, Outcome) %>%
+    #     summarise(n = n(), .groups = "drop") %>%
+    #     complete(IF, Outcome = outcomes_decisions, fill = list(n = 0)) %>%
+    #     group_by(IF) %>%
+    #     mutate(Proportion = round(n / sum(n), 3)) %>%
+    #     ungroup() %>%
+    #     mutate(Outcome = factor(Outcome, levels = outcomes_decisions)) %>%
+    #     arrange(Outcome) %>%
+    #     select(-n) %>%
+    #     pivot_wider(names_from = IF, values_from = Proportion, values_fill = 0)
+    #
+    #   # Remove the Outcome column and convert to matrix
+    #   numeric_mat <- as.matrix(IF_outcomes_mat[, -1])
+    #
+    #   # Now apply sum to rows 1:3
+    #
+    #   density_vals <- c(NA, 20, 50, 50, 20, NA)
+    #   angle_vals <- c(0, 45, -45, -45, 45, 0)
+    #
+    #   par(mar = c(5, 4, 4, 20))  # Increase right margin
+    #
+    #   # Get bar heights to determine where to draw lines
+    #   bar_heights <- apply(numeric_mat[1:3, , drop = F], 2, sum)
+    #
+    #
+    #   bar_positions <- barplot(numeric_mat,
+    #                            beside = FALSE,
+    #                            width = 1,  # Optional, but explicit
+    #                            col = outcome_decisions_colors[outcomes_decisions],
+    #                            density = density_vals,
+    #                            angle = angle_vals,
+    #                            xlab = "Information Fraction",
+    #                            ylab = "Proportion",
+    #                            main = "Proportion of Trial Outcomes at Different Information Fractions")
+    #
+    #
+    #
+    #   legend("topright",
+    #          legend = c(rev(outcomes_decisions), "Assurance"),
+    #          fill = c(rev(outcome_decisions_colors[outcomes_decisions]), NA),
+    #          border = c(rep("black", length(outcomes_decisions)), NA),
+    #          density = c(rev(density_vals), NA),
+    #          angle = c(rev(angle_vals), NA),
+    #          col = c(rep(NA, length(outcomes_decisions)), "black"),
+    #          cex = 0.6,
+    #          xpd = TRUE,
+    #          inset = c(-0.4, 0),
+    #          bty = "n")
+    #
+    #
+    #
+    #   # Add black separator lines between top and bottom outcome segments
+    #   segments(x0 = bar_positions - 0.5,  # left edge of each bar
+    #            x1 = bar_positions + 0.5,  # right edge
+    #            y0 = bar_heights,          # y position (cumulative height of top 3)
+    #            y1 = bar_heights,
+    #            col = "black",
+    #            lwd = 5)
+    #
+    #   # Add text labels just below the separator line
+    #   text(x = bar_positions,
+    #        y = bar_heights,  # Adjust this for spacing
+    #        labels = round(bar_heights, 2),
+    #        cex = 1,                # text size
+    #        pos = 1)                  # below the specified y (1 = below)
+    #
+    #
+    # })
 
 
-      function_call_Bayesian <- reactive({
-        n_c <- (input$numofpatients*input$ControlRatio)/(sum(input$ControlRatio+input$TreatmentRatio))
-        n_t <- (input$numofpatients*input$TreatmentRatio)/(sum(input$ControlRatio+input$TreatmentRatio))
+  # BPP - Timing Logic ---------------------------------
 
 
+      function_call_BPP_Timing <- reactive({
 
-        base_call <- paste0("calc_BPP_hist(n_c = ",
-                            paste(round(n_c), collapse = ", "),
+
+        base_call <- paste0("calibrate_BPP_timing(n_c = ",
+                            input$n_c,
                             ", \n n_t = ",
-                            paste(round(n_t), collapse = ", "),
-                            ", \n control_dist = \"",
+                            input$n_t,
+                            ", \n control_model = list(dist = \"",
                             input$ControlDist,
                             "\"")
 
         if (input$ControlDist=="Exponential"){
           base_call <- paste0(base_call,
-                              ", \n control_parameters = \"",
+                              ", \n parameter_mode = \"",
                               input$ExpChoice,
                               "\"")
           if (input$ExpChoice=="Fixed"){
             base_call <- paste0(base_call,
-                                ", \n fixed_parameters_type = \"",
+                                ", \n fixed_type = \"",
                                 input$ExpRateorTime,
                                 "\"")
-            if (input$ExpRateorTime == "Parameter"){
-              base_call <-  paste0(base_call, ", \n lambda_c = ",
+            if (input$ExpRateorTime == "Parameters"){
+              base_call <-  paste0(base_call, ", \n lambda = ",
                                    input$ExpRate)
             } else if (input$ExpRateorTime == "Landmark"){
               base_call <-  paste0(base_call, ", \n t1 = ",
@@ -1273,7 +1571,7 @@ server <- function(input, output, session) {
 
 
         base_call <- paste0(base_call,
-                            ", \n delay_time_SHELF = SHELF::fitdist(c(",
+                            "), \n effect_model = list(delay_SHELF = SHELF::fitdist(c(",
                             input$TValues,
                             "), probs = c(",
                             input$TProbs,
@@ -1281,9 +1579,9 @@ server <- function(input, output, session) {
                             strsplit(input$TLimits, ", ")[[1]][1],
                             ", upper = ",
                             strsplit(input$TLimits, ", ")[[1]][2],
-                            "), \n delay_time_dist = \"",
+                            "), \n delay_dist = \"",
                             input$TDist,
-                            "\", \n post_delay_HR_SHELF = SHELF::fitdist(c(",
+                            "\", \n HR_SHELF = SHELF::fitdist(c(",
                             input$HRValues,
                             "), probs = c(",
                             input$HRProbs,
@@ -1291,63 +1589,354 @@ server <- function(input, output, session) {
                             strsplit(input$HRLimits, ", ")[[1]][1],
                             ", upper = ",
                             strsplit(input$HRLimits, ", ")[[1]][2],
-                            "), \n post_delay_HR_dist = \"",
+                            "), \n HR_dist = \"",
                             input$HRDist,
                             "\",  \n P_S = ",
                             input$P_S,
                             ", \n P_DTE = ",
                             input$P_DTE,
-                            ", \n cens_events = ",
-                            input$censEvents,
-                            ", \n rec_method = \"",
+                            "), \n recruitment_model = list(method = \"",
                             input$rec_method,
                             "\"")
 
 
         if (input$rec_method == "power"){
           base_call <- paste0(base_call,
-                              ", \n rec_period = ",
+                              ", \n period = ",
                               input$rec_period,
-                              ", \n rec_power = ",
+                              ", \n power = ",
                               input$rec_power)
         }
         if (input$rec_method == "PWC"){
           base_call <- paste0(base_call,
-                              ", \n rec_rate = ",
+                              ", \n rate = ",
                               input$rec_rate,
-                              ", \n rec_duration = ",
+                              ", \n duration = ",
                               input$rec_duration)
         }
 
 
 
+        base_call <- paste0(base_call, "), \n IA_model = list(events = ",
+                            input$total_events_BPP_timing,
+                            ", \n IF = ", input$BPP_Timing_IF)
+
+
+        df <- hot_to_r(input$alpha_spending_table)
+        alpha_vector <- df$`alpha.spending`
 
         base_call <- paste0(base_call,
-                            ", \n nSims = ",
-                            input$nSamples,
-                            ", \n k = ",
-                            input$number_of_looks)
+                            "), \n analysis_model  = list(
+          method = \"LRT\",
+          alternative_hypothesis = \"one.sided\",
+          alpha = ", alpha_vector[length(alpha_vector)])
+
+
+        base_call <- paste0(base_call,
+                            "), \n n_sims = ",
+                            input$n_sims_BPP_Timing,
+                            ")")
 
 
 
-        base_call <- paste0(base_call, ")")
 
         return(base_call)
 
       })
 
-    output$display_func_Bayesian <- renderText({
-      function_call_Bayesian()
+    observe({
+      updateAceEditor(session, "display_func_BPP_Timing", value = function_call_BPP_Timing())
     })
 
-    calculate_Bayesian <- eventReactive(input$calcBayesian, {
-      call_string <- function_call_Bayesian()
+    calculate_BPP_Timing <- eventReactive(input$calc_BPP_Timing, {
+      call_string <- function_call_BPP_Timing()
       result <- eval(parse(text = call_string))
+      shinyjs::show("n_breaks_BPP_timing")
+      shinyjs::show("lower_bound_BPP_timing")
+      shinyjs::show("upper_bound_BPP_timing")
       return(result)
     })
 
-    output$BayesianPlot <- renderPlot({
-      calculate_Bayesian()
+    output$BPP_timing_hist <- renderPlot({
+
+      outcome <- calculate_BPP_Timing()
+
+      hist(outcome$outcome_list[[1]]$BPP_values,
+           breaks = input$n_breaks_BPP_timing,
+           xlim = c(0,1),
+           freq = F,
+           xlab = "BPP",
+           main = paste0("Distribution of BPP values at IF = ", input$BPP_Timing_IF))
+
+          })
+
+
+    output$BPP_Timing_text <- renderText({
+
+      outcome <- calculate_BPP_Timing()
+      dat     <- outcome$outcome_list[[1]]
+
+      # Mean censoring time
+      mean_cens <- mean(dat$cens_time)
+
+      # Informativeness metric
+      BPP_outcome <- dat$BPP_values
+      inform_metric <- mean(BPP_outcome < input$lower_bound_BPP_timing |
+                              BPP_outcome > input$upper_bound_BPP_timing)
+
+      paste0(
+        "The mean time of censoring is ", round(mean_cens, 2), ". ",
+        "The informativeness metric P(BPP < ", input$lower_bound_BPP_timing,
+        " OR BPP > ", input$upper_bound_BPP_timing, ") = ",
+        round(inform_metric, 3), "."
+      )
+    })
+
+
+    # BPP - Threshold Logic ---------------------------------
+
+    function_call_BPP_Threshold <- reactive({
+
+
+      base_call <- paste0(
+        "calibrate_BPP_threshold(n_c = ", input$n_c,
+        ", \n n_t = ", input$n_t,
+        base_call <- paste0(
+          ", \n control_model = list(\n   dist = \"", input$ControlDist, "\""
+        )
+
+      )
+
+      if (input$ControlDist == "Exponential") {
+
+        base_call <- paste0(
+          base_call,
+          ", \n   parameter_mode = \"", input$ExpChoice, "\""
+        )
+
+        if (input$ExpChoice == "Fixed") {
+
+          base_call <- paste0(
+            base_call,
+            ", \n   fixed_type = \"", input$ExpRateorTime, "\""
+          )
+
+          if (input$ExpRateorTime == "Parameters") {
+
+            base_call <- paste0(
+              base_call,
+              ", \n   lambda = ", input$ExpRate
+            )
+
+          } else if (input$ExpRateorTime == "Landmark") {
+
+            base_call <- paste0(
+              base_call,
+              ", \n   t1 = ", input$ExpTime,
+              ", \n   surv_t1 = ", input$ExpSurv
+            )
+          }
+        }
+
+        if (input$ExpChoice == "Distribution") {
+
+          base_call <- paste0(
+            base_call,
+            ", \n   t1 = ", input$ExpSurvTime,
+            ", \n   t1_Beta_a = ", input$ExpBetaA,
+            ", \n   t1_Beta_b = ", input$ExpBetaB
+          )
+        }
+      }
+
+      if (input$ControlDist == "Weibull") {
+
+        base_call <- paste0(
+          base_call,
+          ", \n   control_parameters = \"", input$WeibullChoice, "\""
+        )
+
+        if (input$WeibullChoice == "Fixed") {
+
+          base_call <- paste0(
+            base_call,
+            ", \n   fixed_parameters_type = \"", input$WeibRateorTime, "\""
+          )
+
+          if (input$WeibRateorTime == "Parameters") {
+
+            base_call <- paste0(
+              base_call,
+              ", \n   lambda_c = ", input$WeibullScale,
+              ", \n   gamma_c = ", input$WeibullShape
+            )
+
+          } else if (input$WeibRateorTime == "Landmark") {
+
+            base_call <- paste0(
+              base_call,
+              ", \n   t1 = ", input$WeibullTime1,
+              ", \n   t2 = ", input$WeibullSurv1,
+              ", \n   surv_t1 = ", input$WeibullTime2,
+              ", \n   surv_t2 = ", input$WeibullSurv2
+            )
+          }
+
+        } else if (input$WeibullChoice == "Distribution") {
+
+          base_call <- paste0(
+            base_call,
+            ", \n   t1 = ", input$WeibullDistT1,
+            ", \n   t2 = ", input$WeibullDistT2,
+            ", \n   t1_Beta_a = ", input$WeibullDistS1BetaA,
+            ", \n   t1_Beta_b = ", input$WeibullDistS1BetaB,
+            ", \n   diff_Beta_a = ", input$WeibullDistDelta1BetaA,
+            ", \n   diff_Beta_b = ", input$WeibullDistDelta1BetaB
+          )
+        }
+      }
+
+
+      # Close control_model
+      base_call <- paste0(
+        base_call,
+        "), \n effect_model = list(\n   delay_SHELF = SHELF::fitdist(c(",
+        input$TValues,
+        "), probs = c(",
+        input$TProbs,
+        "), lower = ",
+        strsplit(input$TLimits, ", ")[[1]][1],
+        ", upper = ",
+        strsplit(input$TLimits, ", ")[[1]][2],
+        "), \n   delay_dist = \"",
+        input$TDist,
+        "\", \n   HR_SHELF = SHELF::fitdist(c(",
+        input$HRValues,
+        "), probs = c(",
+        input$HRProbs,
+        "), lower = ",
+        strsplit(input$HRLimits, ", ")[[1]][1],
+        ", upper = ",
+        strsplit(input$HRLimits, ", ")[[1]][2],
+        "), \n   HR_dist = \"",
+        input$HRDist,
+        "\",  \n   P_S = ",
+        input$P_S,
+        ", \n   P_DTE = ",
+        input$P_DTE,
+        "\n )"
+      )
+
+
+      base_call <- paste0(
+        base_call,
+        ", \n recruitment_model = list(\n   method = \"", input$rec_method, "\""
+      )
+
+
+
+      if (input$rec_method == "power") {
+
+        base_call <- paste0(
+          base_call,
+          ", \n   period = ", input$rec_period,
+          ", \n   power = ", input$rec_power
+        )
+      }
+
+      if (input$rec_method == "PWC") {
+
+        base_call <- paste0(
+          base_call,
+          ", \n   rate = ", input$rec_rate,
+          ", \n   duration = ", input$rec_duration
+        )
+      }
+
+      base_call <- paste0(base_call, ")")
+
+
+      base_call <- paste0(
+        base_call,
+        ", \n IA_model = list(\n    events = ", input$total_events_BPP_threshold,
+        ", \n   IF = ", input$BPP_Threshold_IF, ")"
+      )
+
+
+
+
+      df <- hot_to_r(input$alpha_spending_table)
+      alpha_vector <- df$`alpha.spending`
+
+      base_call <- paste0(
+        base_call,
+        ", \n analysis_model = list(\n",
+        "    method = \"LRT\",\n",
+        "    alternative_hypothesis = \"one.sided\",\n",
+        "    alpha = ", alpha_vector[length(alpha_vector)], "\n  )"
+      )
+
+      base_call <- paste0(
+        base_call,
+        ", \n data_generating_model = list(\n",
+        "    lambda_c = ", input$lambda_c_threshold,
+        ", \n    delay_time = ", input$delay_time_threshold,
+        ", \n    post_delay_HR = ", input$post_delay_hr_threshold,
+        "\n  )"
+      )
+
+      base_call <- paste0(
+        base_call,
+        ", \n n_sims = ", input$n_sims_BPP_Threshold,
+        ")"
+      )
+
+      return(base_call)
+
+    })
+
+
+    observe({
+      updateAceEditor(session, "display_func_BPP_Threshold", value = function_call_BPP_Threshold())
+    })
+
+    calculate_BPP_Threshold <- eventReactive(input$calc_BPP_Threshold, {
+      call_string <- function_call_BPP_Threshold()
+      result <- eval(parse(text = call_string))
+      shinyjs::show("threshold_value")
+      shinyjs::show("n_breaks_BPP_threshold")
+      return(result)
+    })
+
+    output$BPP_Threshold_hist <- renderPlot({
+
+      outcome <- calculate_BPP_Threshold()
+
+      print(outcome)
+
+      hist(outcome$BPP_vec,
+           breaks = input$n_breaks_BPP_threshold,
+           xlim = c(0,1),
+           freq = F,
+           xlab = "BPP",
+           main = paste0("Distribution of BPP values at IF = ", input$BPP_Threshold_IF))
+      abline(v = input$threshold_value, col = "red", lty = 2)
+
+
+    })
+
+
+
+    output$BPP_Threshold_text <- renderText({
+
+      outcome <- calculate_BPP_Threshold()
+
+      # Informativeness metric
+      BPP_cutoff <- mean(outcome$BPP_vec < input$threshold_value)
+
+      paste0(
+        "P(BPP < ", input$threshold_value, ") = ", round(BPP_cutoff, 2))
+
     })
 
 
