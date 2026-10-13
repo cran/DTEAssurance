@@ -42,12 +42,14 @@ test_that("calc_dte_assurance_adaptive returns expected structure and values", {
   expect_false(is.null(result))
   expect_true(is.data.frame(result))
   expect_equal(nrow(result), 2)
-  expect_true(all(c("Trial", "Decision", "StopTime", "SampleSize", "Final_Decision") %in% names(result)))
+  expect_true(all(c("Trial", "Decision", "StopTime", "SampleSize", "Success", "Converged") %in% names(result)))
   expect_type(result$Trial, "integer")
   expect_type(result$Decision, "character")
   expect_type(result$StopTime, "double")
   expect_type(result$SampleSize, "integer")
-  expect_type(result$Final_Decision, "character")
+  expect_type(result$Success, "logical")
+  expect_equal(result$Success,
+               result$Decision %in% c("Stop for efficacy", "Successful at final"))
 })
 
 
@@ -63,9 +65,9 @@ test_that("calc_dte_assurance_adaptive returns expected structure and values", {
     events = 100,
     alpha_spending = c(0.0125, 0.025),
     alpha_IF = c(0.75, 1),
-    futility_type = "BPP",
+    futility_type = "PP",
     futility_IF = 0.5,
-    BPP_threshold = 0.2)
+    kappa = 0.2)
 
   analysis_model = list(
     method = "LRT",
@@ -82,16 +84,20 @@ test_that("calc_dte_assurance_adaptive returns expected structure and values", {
     recruitment_model = recruitment_model,
     GSD_model = GSD_model,
     analysis_model = analysis_model,
+    update_priors_sims = 100,
+    PP_sims = 20,
     n_sims = 2
   )
 
   expect_false(is.null(result))
   expect_true(is.data.frame(result))
   expect_equal(nrow(result), 2)
-  expect_true(all(c("Trial", "Decision", "StopTime", "SampleSize", "Final_Decision") %in% names(result)))
+  expect_true(all(c("Trial", "Decision", "StopTime", "SampleSize", "Success", "Converged") %in% names(result)))
   expect_type(result$Trial, "integer")
   expect_type(result$Decision, "character")
   expect_type(result$StopTime, "double")
   expect_type(result$SampleSize, "integer")
-  expect_type(result$Final_Decision, "character")
+  expect_type(result$Success, "logical")
+  expect_equal(result$Success,
+               result$Decision %in% c("Stop for efficacy", "Successful at final"))
 })

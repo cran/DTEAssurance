@@ -2,7 +2,7 @@ Package: DTEAssurance
 Type: Package
 Title: Assurance Methods for Clinical Trials with a Delayed Treatment
         Effect
-Version: 1.1.0
+Version: 1.3.0
 Authors@R: 
     person("James", "Salsbury", email = "jsalsbury1@sheffield.ac.uk",
            role = c("aut", "cre"),
@@ -21,17 +21,17 @@ License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.3.3
-Imports: SHELF, shiny, stats, survival, nleqslv, nph, nphRCT, dplyr,
-        rjags, rpact, magrittr, rlang, future.apply
-Suggests: testthat (>= 3.0.0)
+Imports: SHELF, stats, survival, nph, nphRCT, dplyr, rpact, magrittr,
+        rlang, future.apply
+Suggests: testthat (>= 3.0.0), nleqslv, rjags, coda, shiny, shinyAce,
+        shinyBS, shinyjs, rhandsontable, plotly
 Config/testthat/edition: 3
-Depends: R (>= 4.1.0)
-Date: 2025-12-02
+Depends: R (>= 4.0)
 URL: https://jamesalsbury.github.io/DTEAssurance/
 NeedsCompilation: no
-Packaged: 2025-12-02 11:55:18 UTC; smp21js
+Packaged: 2026-10-13 15:55:26 UTC; jamesalsbury
 Author: James Salsbury [aut, cre] (ORCID:
     <https://orcid.org/0000-0002-2584-3640>)
 Maintainer: James Salsbury <jsalsbury1@sheffield.ac.uk>
 Repository: CRAN
-Date/Publication: 2025-12-02 12:20:02 UTC
+Date/Publication: 2026-10-13 16:10:24 UTC

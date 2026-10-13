@@ -8,39 +8,58 @@ survival_test(
   data,
   analysis_method = "LRT",
   alternative = "one.sided",
-  alpha = 0.05,
+  alpha,
   rho = 0,
   gamma = 0,
   t_star = NULL,
-  s_star = NULL
+  s_star = NULL,
+  return_HR = TRUE
 )
 }
 \arguments{
 \item{data}{A dataframe containing survival data. Must include columns for survival time, event status, and treatment group.}
 
-\item{analysis_method}{Method of analysis: \code{"LRT"} (default) for standard log-rank test, or \code{"WLRT"} for weighted log-rank test.}
+\item{analysis_method}{Method of analysis: \code{"LRT"} (default) for standard log-rank test, \code{"WLRT"} for a Fleming-Harrington-family weighted log-rank test, or \code{"MW"} for the modestly-weighted log-rank test.}
 
-\item{alternative}{String specifying the alternative hypothesis. Must be one of \code{"one.sided"} or \code{"two.sided"} (default).}
+\item{alternative}{String specifying the alternative hypothesis: \code{"one.sided"} (default) or \code{"two.sided"}.}
 
-\item{alpha}{Type I error threshold for significance testing.}
+\item{alpha}{Type I error level for the significance test (required, no
+default). Pass \code{NULL} if only \code{Z} is needed; \code{Signif} is
+then \code{NA}.}
 
 \item{rho}{Rho parameter for the Fleming-Harrington weighted log-rank test.}
 
 \item{gamma}{Gamma parameter for the Fleming-Harrington weighted log-rank test.}
 
-\item{t_star}{Parameter \eqn{t^*} used in modestly weighted tests.}
+\item{t_star}{Parameter \eqn{t^*} used in the modestly weighted test.}
 
-\item{s_star}{Parameter \eqn{s^*} used in modestly weighted tests.}
+\item{s_star}{Parameter \eqn{s^*} used in the modestly weighted test.}
+
+\item{return_HR}{If \code{TRUE} (default), fit a Cox model and return the
+estimated hazard ratio as \code{observed_HR}. If \code{FALSE}, the Cox
+fit is skipped (it does not affect \code{Signif} or \code{Z}) and
+\code{observed_HR} is \code{NA}. The group-sequential and predictive
+probability code uses \code{FALSE}.}
 }
 \value{
 A list containing:
 \describe{
-\item{Signif}{Logical indicator of statistical significance based on the chosen test and alpha level.}
-\item{observed_HR}{Estimated hazard ratio from a Cox proportional hazards model.}
+\item{Signif}{Logical: whether the test is significant at level
+\code{alpha}. \code{FALSE} if \code{Z} is \code{NA}; \code{NA} if
+\code{alpha} is \code{NULL}.}
+\item{observed_HR}{Estimated hazard ratio from a Cox proportional hazards
+model, or \code{NA} if \code{return_HR = FALSE}.}
+\item{Z}{Signed test statistic. For all three methods, positive values
+favour the arm coded as "Treatment" (the second factor level of
+\code{group}), i.e. positive Z corresponds to a hazard ratio below 1.}
 }
 }
 \description{
-Performs a survival analysis using either the standard log-rank test (LRT) or a weighted log-rank test (WLRT). The function estimates the hazard ratio and determines whether the result is statistically significant based on the specified alpha level and alternative hypothesis.
+Performs a survival analysis using the standard log-rank test (LRT), a
+weighted log-rank test in the Fleming-Harrington family (WLRT), or the
+modestly-weighted log-rank test of Magirr and Burman (MW), and determines
+whether the result is statistically significant at the specified alpha
+level and alternative hypothesis.
 }
 \examples{
 set.seed(123)
